@@ -6,6 +6,36 @@ A secure, read-only PostgreSQL Model Context Protocol (MCP) server that provides
 
 This MCP server enables AI assistants and other MCP clients to safely interact with PostgreSQL databases through a read-only interface. It provides schema inspection, parameterized queries, table previews, change tracking, and row counting while preventing any data modifications.
 
+## Quick Start
+
+Get started in seconds with npx (no installation required):
+
+```bash
+# Set your database connection
+export DATABASE_URL="postgres://user:password@localhost:5432/dbname"
+
+# Run the server
+npx -y postgres-mcp-readonly
+```
+
+**For Claude Desktop**, add this to your `claude_desktop_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "postgres": {
+      "command": "npx",
+      "args": ["-y", "postgres-mcp-readonly"],
+      "env": {
+        "DATABASE_URL": "postgres://user:pass@localhost:5432/mydb"
+      }
+    }
+  }
+}
+```
+
+Restart Claude Desktop, and you'll have database access in your conversations! 🎉
+
 ## Features
 
 ### 🔒 Security First
@@ -30,19 +60,93 @@ This MCP server enables AI assistants and other MCP clients to safely interact w
 - **schema-summary** (`pg://schema/summary`) - Table list with approximate row counts
 - **schema-full** (`pg://schema/full`) - Complete schema with columns, keys, and relationships
 
-## Installation
+## Installation & Usage
 
 ### Prerequisites
 
 - Node.js 18+
 - PostgreSQL database (accessible via network)
 
-### Setup
+### Option 1: Using npx (Recommended)
 
-1. **Clone or download this project**
+No installation required! Use directly with npx:
+
+```bash
+# Run with environment variables
+export DATABASE_URL="postgres://user:pass@localhost:5432/mydb"
+npx -y postgres-mcp-readonly
+```
+
+**For Windows PowerShell:**
+
+```powershell
+$env:DATABASE_URL="postgres://user:pass@localhost:5432/mydb"
+npx -y postgres-mcp-readonly
+```
+
+**With Claude Desktop** - Add to `claude_desktop_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "postgres": {
+      "command": "npx",
+      "args": ["-y", "postgres-mcp-readonly"],
+      "env": {
+        "DATABASE_URL": "postgres://user:pass@localhost:5432/mydb",
+        "STATEMENT_TIMEOUT_MS": "5000",
+        "MAX_ROWS": "500"
+      }
+    }
+  }
+}
+```
+
+**With MCP Inspector:**
+
+```bash
+npx @modelcontextprotocol/inspector npx -y postgres-mcp-readonly
+```
+
+### Option 2: Global Installation
+
+Install once, use everywhere:
+
+```bash
+npm install -g postgres-mcp-readonly
+```
+
+**Then run:**
+
+```bash
+export DATABASE_URL="postgres://user:pass@localhost:5432/mydb"
+postgres-mcp-readonly
+```
+
+**With Claude Desktop:**
+
+```json
+{
+  "mcpServers": {
+    "postgres": {
+      "command": "postgres-mcp-readonly",
+      "env": {
+        "DATABASE_URL": "postgres://user:pass@localhost:5432/mydb"
+      }
+    }
+  }
+}
+```
+
+### Option 3: Local Development
+
+For contributing or customizing:
+
+1. **Clone the repository**
 
    ```bash
-   cd pg-mcp-server
+   git clone https://github.com/mahin1995/postgres-mcp-readonly.git
+   cd postgres-mcp-readonly
    ```
 
 2. **Install dependencies**
@@ -71,6 +175,22 @@ This MCP server enables AI assistants and other MCP clients to safely interact w
    ```bash
    npm start
    ```
+
+**With Claude Desktop (local development):**
+
+```json
+{
+  "mcpServers": {
+    "postgres": {
+      "command": "node",
+      "args": ["/absolute/path/to/postgres-mcp-readonly/dist/server.js"],
+      "env": {
+        "DATABASE_URL": "postgres://user:pass@localhost:5432/mydb"
+      }
+    }
+  }
+}
+```
 
 ## Configuration
 
@@ -331,25 +451,61 @@ Get exact row count for a table.
 
 ## Usage Examples
 
-### With Claude Desktop (MCP Client)
+### Quick Start with npx
 
-Add to your `claude_desktop_config.json`:
+```bash
+# Set your database URL
+export DATABASE_URL="postgres://user:pass@localhost:5432/mydb"
+
+# Run the server
+npx -y postgres-mcp-readonly
+```
+
+The server will start and wait for MCP protocol messages. Press `Ctrl+C` to stop.
+
+### Testing with MCP Inspector
+
+The MCP Inspector provides a web UI to test your server:
+
+```bash
+# Set environment first
+export DATABASE_URL="postgres://user:pass@localhost:5432/mydb"
+
+# Launch inspector with your server
+npx @modelcontextprotocol/inspector npx -y postgres-mcp-readonly
+```
+
+This opens a browser where you can:
+
+- View all available tools
+- Call tools with parameters
+- See responses in real-time
+
+### With Claude Desktop
+
+Claude Desktop is the primary way to use MCP servers with AI assistants.
+
+**Using npx (recommended):**
+
+Edit `claude_desktop_config.json`:
 
 ```json
 {
   "mcpServers": {
     "postgres": {
-      "command": "node",
-      "args": ["d:/code/node/pg-mcp-server/dist/server.js"],
+      "command": "npx",
+      "args": ["-y", "postgres-mcp-readonly"],
       "env": {
-        "DATABASE_URL": "postgres://user:pass@localhost:5432/mydb"
+        "DATABASE_URL": "postgres://user:pass@localhost:5432/mydb",
+        "STATEMENT_TIMEOUT_MS": "5000",
+        "MAX_ROWS": "500"
       }
     }
   }
 }
 ```
 
-Or if installed globally via npm:
+**Using global install:**
 
 ```json
 {
@@ -511,28 +667,68 @@ Database errors are sanitized to prevent leaking:
 
 ## Development
 
+This section is for contributors working on the package itself.
+
+### Setting Up Development Environment
+
+```bash
+# Clone the repository
+git clone https://github.com/mahin1995/postgres-mcp-readonly.git
+cd postgres-mcp-readonly
+
+# Install dependencies
+npm install
+
+# Set up environment
+cp .env.example .env
+# Edit .env with your database credentials
+```
+
 ### Running Locally
 
 ```bash
-# Set environment variables
-export DATABASE_URL="postgres://localhost:5432/testdb"
-
-# Build and run server
+# Build TypeScript
 npm run build
+
+# Run the server
 npm start
 
 # Or use dev mode (builds and runs)
 npm run dev
+
+# Watch mode (auto-rebuild on changes)
+npm run build:watch
 ```
 
-### Testing with MCP Inspector
+### Testing
+
+**Quick Connection Test:**
+
+```bash
+node test-client.js
+```
+
+This runs a basic test to verify:
+
+- Server starts successfully
+- MCP protocol communication works
+- All tools are registered
+
+**Interactive Testing with MCP Inspector:**
+
+```bash
+npm run build
+npx @modelcontextprotocol/inspector node dist/server.js
+```
+
+### Publishing
 
 ```bash
 # Build first
 npm run build
 
-# Then inspect
-npx @modelcontextprotocol/inspector node dist/server.js
+# Publish to npm (requires authentication)
+npm publish --otp=YOUR_2FA_CODE
 ```
 
 ## License
