@@ -1,0 +1,29 @@
+# Source files (only distribute compiled JS)
+src/
+*.ts
+!*.d.ts
+tsconfig.json
+
+# Environment files
+.env
+.env.*
+
+# Node modules
+node_modules/
+
+# Development files
+.vscode/
+.idea/
+*.log
+npm-debug.log*
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Git
+.git/
+.gitignore
+
+# Build artifacts
+*.tsbuildinfo

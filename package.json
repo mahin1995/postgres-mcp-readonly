@@ -1,0 +1,61 @@
+{
+  "name": "@your-username/pg-mcp-server",
+  "version": "1.0.0",
+  "description": "A secure, read-only PostgreSQL Model Context Protocol (MCP) server for safe database introspection and querying",
+  "main": "dist/server.js",
+  "types": "dist/server.d.ts",
+  "bin": {
+    "pg-mcp-server": "./dist/server.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "build:watch": "tsc --watch",
+    "start": "node dist/server.js",
+    "dev": "tsc && node dist/server.js",
+    "prepublishOnly": "npm run build",
+    "clean": "rimraf dist",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "postgresql",
+    "postgres",
+    "database",
+    "read-only",
+    "ai",
+    "llm",
+    "claude",
+    "typescript"
+  ],
+  "author": "Your Name <your.email@example.com>",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/your-username/pg-mcp-server.git"
+  },
+  "bugs": {
+    "url": "https://github.com/your-username/pg-mcp-server/issues"
+  },
+  "homepage": "https://github.com/your-username/pg-mcp-server#readme",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.27.1",
+    "dotenv": "^17.3.1",
+    "pg": "^8.19.0",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/pg": "^8.16.0",
+    "rimraf": "^5.0.5",
+    "typescript": "^5.3.0"
+  }
+}
