@@ -1,11 +1,11 @@
 {
-  "name": "@your-username/pg-mcp-server",
+  "name": "postgres-mcp-readonly",
   "version": "1.0.0",
   "description": "A secure, read-only PostgreSQL Model Context Protocol (MCP) server for safe database introspection and querying",
   "main": "dist/server.js",
   "types": "dist/server.d.ts",
   "bin": {
-    "pg-mcp-server": "./dist/server.js"
+    "postgres-mcp-readonly": "./dist/server.js"
   },
   "scripts": {
     "build": "tsc",
@@ -28,16 +28,16 @@
     "claude",
     "typescript"
   ],
-  "author": "Your Name <your.email@example.com>",
+  "author": "Mohaimanul islam mahin mohaimanul6@gmail.com",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/your-username/pg-mcp-server.git"
+    "url": "https://github.com/mahin1995/postgres-mcp-readonly.git"
   },
   "bugs": {
-    "url": "https://github.com/your-username/pg-mcp-server/issues"
+    "url": "https://github.com/mahin1995/postgres-mcp-readonly/issues"
   },
-  "homepage": "https://github.com/your-username/pg-mcp-server#readme",
+  "homepage": "https://github.com/mahin1995/postgres-mcp-readonly#readme",
   "engines": {
     "node": ">=18.0.0"
   },

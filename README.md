@@ -1,6 +1,6 @@
 # PostgreSQL MCP Server
 
-A secure, read-only PostgreSQL Model Context Protocol (MCP) server that provides safe database introspection and querying capabilities.
+A secure, read-only PostgreSQL Model Context Protocol (MCP) server that provides safe database introspection and querying capabilities. Built with TypeScript for enhanced type safety and reliability.
 
 ## Overview
 
@@ -51,7 +51,13 @@ This MCP server enables AI assistants and other MCP clients to safely interact w
    npm install
    ```
 
-3. **Configure environment variables**
+3. **Build the TypeScript code**
+
+   ```bash
+   npm run build
+   ```
+
+4. **Configure environment variables**
 
    Create a `.env` file:
 
@@ -61,9 +67,9 @@ This MCP server enables AI assistants and other MCP clients to safely interact w
    MAX_ROWS=500
    ```
 
-4. **Test the connection**
+5. **Test the connection**
    ```bash
-   node server.js
+   npm start
    ```
 
 ## Configuration
@@ -334,7 +340,22 @@ Add to your `claude_desktop_config.json`:
   "mcpServers": {
     "postgres": {
       "command": "node",
-      "args": ["d:/code/node/pg-mcp-server/server.js"],
+      "args": ["d:/code/node/pg-mcp-server/dist/server.js"],
+      "env": {
+        "DATABASE_URL": "postgres://user:pass@localhost:5432/mydb"
+      }
+    }
+  }
+}
+```
+
+Or if installed globally via npm:
+
+```json
+{
+  "mcpServers": {
+    "postgres": {
+      "command": "postgres-mcp-readonly",
       "env": {
         "DATABASE_URL": "postgres://user:pass@localhost:5432/mydb"
       }
@@ -496,14 +517,22 @@ Database errors are sanitized to prevent leaking:
 # Set environment variables
 export DATABASE_URL="postgres://localhost:5432/testdb"
 
-# Run server
-node server.js
+# Build and run server
+npm run build
+npm start
+
+# Or use dev mode (builds and runs)
+npm run dev
 ```
 
 ### Testing with MCP Inspector
 
 ```bash
-npx @modelcontextprotocol/inspector node server.js
+# Build first
+npm run build
+
+# Then inspect
+npx @modelcontextprotocol/inspector node dist/server.js
 ```
 
 ## License
