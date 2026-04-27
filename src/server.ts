@@ -50,11 +50,13 @@ interface QueryInput {
   sql: string;
   params?: any[];
   maxRows?: number;
+  database?: string;
 }
 
 interface PreviewInput {
   table: string;
   limit?: number;
+  database?: string;
 }
 
 interface WatchInput {
@@ -62,10 +64,12 @@ interface WatchInput {
   cursorColumn?: string;
   lastCursor?: string | number | null;
   batchSize?: number;
+  database?: string;
 }
 
 interface CountInput {
   table: string;
+  database?: string;
 }
 
 interface ParsedTableName {
@@ -73,43 +77,129 @@ interface ParsedTableName {
   table: string;
 }
 
-function getDatabaseUrl(): string {
-  const value = (process.env.DATABASE_URL || "").trim();
-  if (!value) {
-    throw new Error(
-      "Missing DATABASE_URL. Example: postgres://user:password@localhost:5432/postgres",
-    );
-  }
+interface DatabaseConfig {
+  urls: Record<string, string>;
+  defaultDatabase: string;
+}
 
+function validateDatabaseUrl(value: string, sourceName: string): string {
   let parsed: URL;
   try {
     parsed = new URL(value);
   } catch {
     throw new Error(
-      "Invalid DATABASE_URL format. Expected: postgres://user:password@host:5432/dbname",
+      `Invalid ${sourceName} format. Expected: postgres://user:password@host:5432/dbname`,
     );
   }
 
   if (!["postgres:", "postgresql:"].includes(parsed.protocol)) {
     throw new Error(
-      "DATABASE_URL must start with postgres:// or postgresql://",
+      `${sourceName} must start with postgres:// or postgresql://`,
     );
   }
 
   return value;
 }
 
-const DATABASE_URL = getDatabaseUrl();
+function assertDatabaseAlias(name: string): void {
+  if (!/^[a-zA-Z][a-zA-Z0-9_-]*$/.test(name)) {
+    throw new Error(
+      `Invalid database alias: ${name}. Use letters, numbers, underscore, or hyphen.`,
+    );
+  }
+}
+
+function getDatabaseConfig(): DatabaseConfig {
+  const urls: Record<string, string> = {};
+
+  const singleUrl = (process.env.DATABASE_URL || "").trim();
+  if (singleUrl) {
+    urls.default = validateDatabaseUrl(singleUrl, "DATABASE_URL");
+  }
+
+  const multiRaw = (process.env.DATABASE_URLS || "").trim();
+  if (multiRaw) {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(multiRaw);
+    } catch {
+      throw new Error(
+        "Invalid DATABASE_URLS format. Expected JSON object like {\"main\":\"postgres://...\",\"analytics\":\"postgres://...\"}",
+      );
+    }
+
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      throw new Error(
+        "Invalid DATABASE_URLS format. Expected JSON object with alias -> connection string mappings.",
+      );
+    }
+
+    for (const [alias, value] of Object.entries(parsed as Record<string, unknown>)) {
+      assertDatabaseAlias(alias);
+      if (typeof value !== "string" || !value.trim()) {
+        throw new Error(`DATABASE_URLS entry '${alias}' must be a non-empty string.`);
+      }
+      urls[alias] = validateDatabaseUrl(value.trim(), `DATABASE_URLS.${alias}`);
+    }
+  }
+
+  if (Object.keys(urls).length === 0) {
+    throw new Error(
+      "Missing database configuration. Set DATABASE_URL or DATABASE_URLS.",
+    );
+  }
+
+  const requestedDefault = (process.env.DEFAULT_DATABASE || "default").trim();
+  assertDatabaseAlias(requestedDefault);
+
+  if (!urls[requestedDefault]) {
+    const configured = Object.keys(urls).sort().join(", ");
+    throw new Error(
+      `DEFAULT_DATABASE '${requestedDefault}' is not configured. Available aliases: ${configured}`,
+    );
+  }
+
+  return {
+    urls,
+    defaultDatabase: requestedDefault,
+  };
+}
+
+const { urls: DATABASE_URLS, defaultDatabase: DEFAULT_DATABASE } =
+  getDatabaseConfig();
 const STATEMENT_TIMEOUT_MS = Number(process.env.STATEMENT_TIMEOUT_MS || 5000);
 const DEFAULT_MAX_ROWS = Number(process.env.MAX_ROWS || 500);
-const pool = new Pool({
-  connectionString: DATABASE_URL,
-  max: 10,
-});
+const pools = new Map<string, Pool>(
+  Object.entries(DATABASE_URLS).map(([alias, connectionString]) => [
+    alias,
+    new Pool({ connectionString, max: 10 }),
+  ]),
+);
+
+function resolveDatabase(database?: string): string {
+  const selected = (database || DEFAULT_DATABASE).trim();
+  if (!selected) {
+    throw new Error("Database alias cannot be empty.");
+  }
+  if (!DATABASE_URLS[selected]) {
+    const available = Object.keys(DATABASE_URLS).sort().join(", ");
+    throw new Error(
+      `Unknown database alias '${selected}'. Available aliases: ${available}`,
+    );
+  }
+  return selected;
+}
 
 async function withClient<T>(
   fn: (client: PoolClient) => Promise<T>,
+  database?: string,
 ): Promise<T> {
+  const alias = resolveDatabase(database);
+  const pool = pools.get(alias);
+  if (!pool) {
+    throw new Error(`Database pool not initialized for alias '${alias}'.`);
+  }
+
   const client = await pool.connect();
   try {
     await client.query(`SET statement_timeout = '${STATEMENT_TIMEOUT_MS}ms'`);
@@ -147,11 +237,77 @@ function normalizeSql(sql: string): string {
     .trim();
 }
 
-function assertSelectOnly(sql: string): void {
-  const s = normalizeSql(sql).toLowerCase();
-  if (s.includes(";")) {
-    throw new Error("Only single-statement queries are allowed.");
+function findStatementSeparators(sql: string): number[] {
+  const separators: number[] = [];
+  let quote: "'" | '"' | null = null;
+  let dollarQuote: string | null = null;
+
+  for (let i = 0; i < sql.length; i += 1) {
+    if (dollarQuote) {
+      if (sql.startsWith(dollarQuote, i)) {
+        i += dollarQuote.length - 1;
+        dollarQuote = null;
+      }
+      continue;
+    }
+
+    const char = sql[i];
+
+    if (quote) {
+      if (char === quote) {
+        if (quote === "'" && sql[i + 1] === "'") {
+          i += 1;
+        } else {
+          quote = null;
+        }
+      }
+      continue;
+    }
+
+    if (char === "'" || char === '"') {
+      quote = char;
+      continue;
+    }
+
+    if (char === "$") {
+      const match = sql.slice(i).match(/^\$[a-zA-Z_][a-zA-Z0-9_]*\$|^\$\$/);
+      if (match) {
+        dollarQuote = match[0];
+        i += match[0].length - 1;
+      }
+      continue;
+    }
+
+    if (char === ";") {
+      separators.push(i);
+    }
   }
+
+  return separators;
+}
+
+function stripTrailingStatementTerminator(sql: string): string {
+  const s = normalizeSql(sql);
+  const separators = findStatementSeparators(s);
+  if (separators.length === 0) {
+    return s;
+  }
+
+  const lastNonWhitespace = s.search(/\s*$/) - 1;
+  if (
+    separators.length === 1 &&
+    separators[0] === lastNonWhitespace
+  ) {
+    return s.slice(0, lastNonWhitespace).trimEnd();
+  }
+
+  throw new Error(
+    "Only single-statement queries are allowed. Send one SELECT query per db.query call.",
+  );
+}
+
+function assertSelectOnly(sql: string): void {
+  const s = stripTrailingStatementTerminator(sql).toLowerCase();
   if (!s.startsWith("select") && !s.startsWith("with")) {
     throw new Error("Only SELECT queries are allowed.");
   }
@@ -163,7 +319,7 @@ function assertSelectOnly(sql: string): void {
 }
 
 function enforceLimit(sql: string, maxRows: number = DEFAULT_MAX_ROWS): string {
-  const s = normalizeSql(sql);
+  const s = stripTrailingStatementTerminator(sql);
   if (!/\blimit\b/i.test(s)) {
     return `${s} LIMIT ${maxRows}`;
   }
@@ -238,7 +394,12 @@ function parseTableName(input: string): ParsedTableName {
 async function dbSchema({
   mode = "summary",
   filter = "",
-}: { mode?: "summary" | "full"; filter?: string } = {}): Promise<
+  database,
+}: {
+  mode?: "summary" | "full";
+  filter?: string;
+  database?: string;
+} = {}): Promise<
   SchemaOutput | SchemaSummaryOutput
 > {
   const Mode = z.enum(["summary", "full"]);
@@ -393,13 +554,14 @@ async function dbSchema({
     }
 
     return out;
-  });
+  }, database);
 }
 
 async function dbQuery({
   sql,
   params = [],
   maxRows = DEFAULT_MAX_ROWS,
+  database,
 }: QueryInput): Promise<{ rowCount: number; fields: string[]; rows: any[] }> {
   z.object({
     sql: z.string().min(1),
@@ -424,12 +586,13 @@ async function dbQuery({
       await client.query("ROLLBACK");
       throw sanitizeError(error);
     }
-  });
+  }, database);
 }
 
 async function dbPreview({
   table,
   limit = 50,
+  database,
 }: PreviewInput): Promise<{ table: string; rowCount: number; rows: any[] }> {
   z.object({
     table: z.string().min(1),
@@ -454,7 +617,7 @@ async function dbPreview({
       await client.query("ROLLBACK");
       throw sanitizeError(error);
     }
-  });
+  }, database);
 }
 
 async function dbWatch({
@@ -462,6 +625,7 @@ async function dbWatch({
   cursorColumn = "updated_at",
   lastCursor = null,
   batchSize = 200,
+  database,
 }: WatchInput): Promise<{
   table: string;
   cursorColumn: string;
@@ -492,7 +656,7 @@ async function dbWatch({
       throw new Error(`Cursor column not found: ${cursorColumn}`);
     }
     return res.rows[0].data_type;
-  });
+  }, database);
 
   const isTimestamp = /timestamp|date|time/i.test(cursorType);
   const effectiveCursor =
@@ -531,11 +695,12 @@ async function dbWatch({
       await client.query("ROLLBACK");
       throw sanitizeError(error);
     }
-  });
+  }, database);
 }
 
 async function dbCount({
   table,
+  database,
 }: CountInput): Promise<{ table: string; count: number }> {
   z.object({
     table: z.string().min(1),
@@ -557,7 +722,7 @@ async function dbCount({
       await client.query("ROLLBACK");
       throw sanitizeError(error);
     }
-  });
+  }, database);
 }
 
 function asTextContent(payload: any) {
@@ -578,6 +743,20 @@ const server = new McpServer({
 });
 
 server.registerTool(
+  "db.databases",
+  {
+    description:
+      "List configured database aliases and the currently selected default alias.",
+    inputSchema: {},
+  },
+  async () =>
+    asTextContent({
+      defaultDatabase: DEFAULT_DATABASE,
+      databases: Object.keys(DATABASE_URLS).sort(),
+    }),
+);
+
+server.registerTool(
   "db.schema",
   {
     description:
@@ -585,25 +764,27 @@ server.registerTool(
     inputSchema: {
       mode: z.enum(["summary", "full"]).optional(),
       filter: z.string().optional(),
+      database: z.string().min(1).optional(),
     },
   },
-  async ({ mode = "summary", filter = "" }: any) =>
-    asTextContent(await dbSchema({ mode, filter })),
+  async ({ mode = "summary", filter = "", database }: any) =>
+    asTextContent(await dbSchema({ mode, filter, database })),
 );
 
 server.registerTool(
   "db.query",
   {
     description:
-      "Run a single read-only SELECT query with optional parameters and row limit.",
+      "Run one read-only SELECT query with optional parameters and row limit. Do not send multiple SQL statements; one trailing semicolon is accepted.",
     inputSchema: {
       sql: z.string().min(1),
       params: z.array(z.any()).optional(),
       maxRows: z.number().int().min(1).max(5000).optional(),
+      database: z.string().min(1).optional(),
     },
   },
-  async ({ sql, params = [], maxRows = DEFAULT_MAX_ROWS }: any) =>
-    asTextContent(await dbQuery({ sql, params, maxRows })),
+  async ({ sql, params = [], maxRows = DEFAULT_MAX_ROWS, database }: any) =>
+    asTextContent(await dbQuery({ sql, params, maxRows, database })),
 );
 
 server.registerTool(
@@ -613,10 +794,11 @@ server.registerTool(
     inputSchema: {
       table: z.string().min(1),
       limit: z.number().int().min(1).max(500).optional(),
+      database: z.string().min(1).optional(),
     },
   },
-  async ({ table, limit = 50 }: any) =>
-    asTextContent(await dbPreview({ table, limit })),
+  async ({ table, limit = 50, database }: any) =>
+    asTextContent(await dbPreview({ table, limit, database })),
 );
 
 server.registerTool(
@@ -629,6 +811,7 @@ server.registerTool(
       cursorColumn: z.string().min(1).optional(),
       lastCursor: z.union([z.string(), z.number(), z.null()]).optional(),
       batchSize: z.number().int().min(1).max(1000).optional(),
+      database: z.string().min(1).optional(),
     },
   },
   async ({
@@ -636,9 +819,10 @@ server.registerTool(
     cursorColumn = "updated_at",
     lastCursor = null,
     batchSize = 200,
+    database,
   }: any) =>
     asTextContent(
-      await dbWatch({ table, cursorColumn, lastCursor, batchSize }),
+      await dbWatch({ table, cursorColumn, lastCursor, batchSize, database }),
     ),
 );
 
@@ -649,9 +833,11 @@ server.registerTool(
       "Get exact row count for a table. Use table or schema.table name.",
     inputSchema: {
       table: z.string().min(1),
+      database: z.string().min(1).optional(),
     },
   },
-  async ({ table }: any) => asTextContent(await dbCount({ table })),
+  async ({ table, database }: any) =>
+    asTextContent(await dbCount({ table, database })),
 );
 
 const SCHEMA_SUMMARY_URI = "pg://schema/summary";
@@ -704,7 +890,9 @@ async function closeResources() {
   try {
     await server.close();
   } finally {
-    await pool.end();
+    await Promise.allSettled(
+      Array.from(pools.values()).map((pool) => pool.end()),
+    );
   }
 }
 

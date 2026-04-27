@@ -43,17 +43,19 @@ Restart Claude Desktop, and you'll have database access in your conversations! �
 - **Read-only enforcement** - Blocks all write operations (INSERT, UPDATE, DELETE, etc.)
 - **SQL injection protection** - Validates identifiers and sanitizes queries
 - **Automatic LIMIT enforcement** - Prevents unbounded result sets
+- **Agent-friendly SQL handling** - Accepts a harmless trailing semicolon while still blocking multi-statement queries
 - **Query timeouts** - Prevents long-running queries from blocking resources
 - **Error sanitization** - Prevents leakage of sensitive connection details
 - **Transaction isolation** - All queries run in READ ONLY transactions
 
 ### 🛠️ Tools Provided
 
-1. **db.schema** - Inspect database structure
-2. **db.query** - Execute parameterized SELECT queries
-3. **db.preview** - Quick table preview
-4. **db.watch** - Poll for incremental changes
-5. **db.count** - Get exact row counts
+1. **db.databases** - List configured database aliases
+2. **db.schema** - Inspect database structure
+3. **db.query** - Execute parameterized SELECT queries
+4. **db.preview** - Quick table preview
+5. **db.watch** - Poll for incremental changes
+6. **db.count** - Get exact row counts
 
 ### 📊 Resources
 
@@ -196,11 +198,46 @@ For contributing or customizing:
 
 ### Environment Variables
 
-| Variable               | Required | Default | Description                   |
-| ---------------------- | -------- | ------- | ----------------------------- |
-| `DATABASE_URL`         | ✓        | -       | PostgreSQL connection string  |
-| `STATEMENT_TIMEOUT_MS` | ✗        | 5000    | Query timeout in milliseconds |
-| `MAX_ROWS`             | ✗        | 500     | Default maximum rows returned |
+| Variable               | Required   | Default | Description                                                |
+| ---------------------- | ---------- | ------- | ---------------------------------------------------------- |
+| `DATABASE_URL`         | Conditional | -       | Single PostgreSQL connection string (backward compatible) |
+| `DATABASE_URLS`        | Conditional | -       | JSON object of aliases to PostgreSQL URLs                 |
+| `DEFAULT_DATABASE`     | ✗          | default | Default alias used when tool input omits `database`       |
+| `STATEMENT_TIMEOUT_MS` | ✗          | 5000    | Query timeout in milliseconds                              |
+| `MAX_ROWS`             | ✗          | 500     | Default maximum rows returned                              |
+
+At least one of `DATABASE_URL` or `DATABASE_URLS` must be configured.
+
+## Multi-Database Support
+
+This package now supports multiple database connections without breaking existing single-database usage.
+
+- Existing setup continues to work with only `DATABASE_URL`.
+- To use multiple databases, set `DATABASE_URLS` as JSON.
+- Each DB tool accepts an optional `database` alias. If omitted, `DEFAULT_DATABASE` is used.
+
+Example environment:
+
+```env
+DATABASE_URLS={"default":"postgres://user:pass@localhost:5432/app","analytics":"postgres://user:pass@localhost:5432/analytics"}
+DEFAULT_DATABASE=default
+```
+
+List configured aliases:
+
+```javascript
+// db.databases
+{}
+```
+
+Use a specific alias in any DB tool:
+
+```javascript
+{
+  "database": "analytics",
+  "sql": "SELECT * FROM events ORDER BY created_at DESC LIMIT 20"
+}
+```
 
 ### Connection String Format
 
@@ -211,6 +248,25 @@ postgresql://username:password@host:5432/database_name
 
 ## Tools Documentation
 
+All DB tools (`db.schema`, `db.query`, `db.preview`, `db.watch`, `db.count`) support an optional `database` parameter to select a configured alias.
+
+### 0. db.databases
+
+List configured database aliases and current default alias.
+
+**Parameters:**
+
+- None
+
+**Response:**
+
+```json
+{
+  "defaultDatabase": "default",
+  "databases": ["analytics", "default"]
+}
+```
+
 ### 1. db.schema
 
 Inspect database schema information.
@@ -219,6 +275,7 @@ Inspect database schema information.
 
 - `mode` (optional): `"summary"` or `"full"` (default: `"summary"`)
 - `filter` (optional): Filter tables by name or schema (case-insensitive)
+- `database` (optional): Database alias from `DATABASE_URLS` (or `default`)
 
 **Examples:**
 
@@ -290,6 +347,7 @@ Execute a read-only SELECT query with optional parameters.
 - `sql` (required): SELECT query (with or without LIMIT)
 - `params` (optional): Array of parameter values for $1, $2, etc.
 - `maxRows` (optional): Maximum rows to return (1-5000, default: 500)
+- `database` (optional): Database alias from `DATABASE_URLS` (or `default`)
 
 **Examples:**
 
@@ -325,7 +383,8 @@ Execute a read-only SELECT query with optional parameters.
 **Security Notes:**
 
 - Only SELECT and WITH (CTE) queries allowed
-- Single statement only (no semicolons)
+- Single statement only
+- A single trailing semicolon is accepted, but multiple statements are blocked
 - Automatic LIMIT enforcement if not specified
 - Query timeout: 5 seconds (default)
 
@@ -337,6 +396,7 @@ Quick preview of table rows.
 
 - `table` (required): Table name (use `schema.table` or just `table`)
 - `limit` (optional): Number of rows (1-500, default: 50)
+- `database` (optional): Database alias from `DATABASE_URLS` (or `default`)
 
 **Examples:**
 
@@ -373,6 +433,7 @@ Poll for incremental changes using cursor-based pagination.
 - `cursorColumn` (optional): Column to track (default: `"updated_at"`)
 - `lastCursor` (optional): Last cursor value from previous call
 - `batchSize` (optional): Rows per batch (1-1000, default: 200)
+- `database` (optional): Database alias from `DATABASE_URLS` (or `default`)
 
 **Examples:**
 
@@ -425,6 +486,7 @@ Get exact row count for a table.
 **Parameters:**
 
 - `table` (required): Table name (use `schema.table` or just `table`)
+- `database` (optional): Database alias from `DATABASE_URLS` (or `default`)
 
 **Examples:**
 
@@ -558,7 +620,7 @@ The server performs multiple security checks:
 
 2. **Comment Stripping** - Removes SQL comments to prevent obfuscation
 
-3. **Single Statement** - Only one query per request (no semicolons)
+3. **Single Statement** - Only one query per request. A trailing semicolon is allowed, but multi-statement SQL is blocked
 
 4. **SELECT-only** - Must start with SELECT or WITH
 
