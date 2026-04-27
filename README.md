@@ -43,7 +43,9 @@ Restart Claude Desktop, and you'll have database access in your conversations! �
 - **Read-only enforcement** - Blocks all write operations (INSERT, UPDATE, DELETE, etc.)
 - **SQL injection protection** - Validates identifiers and sanitizes queries
 - **Automatic LIMIT enforcement** - Prevents unbounded result sets
-- **Agent-friendly SQL handling** - Accepts a harmless trailing semicolon while still blocking multi-statement queries
+- **Agent-friendly SQL handling** - Accepts single or batched read-only SELECT queries while still blocking writes
+- **Non-executing validation** - Validates SELECT/INSERT/UPDATE/DELETE statement shape with EXPLAIN
+- **Catalog inspection** - Exposes table info, indexes, constraints, relationships, and sample values
 - **Query timeouts** - Prevents long-running queries from blocking resources
 - **Error sanitization** - Prevents leakage of sensitive connection details
 - **Transaction isolation** - All queries run in READ ONLY transactions
@@ -52,10 +54,18 @@ Restart Claude Desktop, and you'll have database access in your conversations! �
 
 1. **db.databases** - List configured database aliases
 2. **db.schema** - Inspect database structure
-3. **db.query** - Execute parameterized SELECT queries
-4. **db.preview** - Quick table preview
-5. **db.watch** - Poll for incremental changes
-6. **db.count** - Get exact row counts
+3. **db.query** - Execute single or batched SELECT queries
+4. **db.validate_insert** - Non-executing INSERT statement validation
+5. **db.validate_sql** - Non-executing SELECT/INSERT/UPDATE/DELETE validation
+6. **db.explain** - Explain SELECT plans without executing queries
+7. **db.table_info** - Inspect one table in detail
+8. **db.indexes** - List indexes
+9. **db.constraints** - List table constraints
+10. **db.relationships** - List foreign-key relationships
+11. **db.sample_values** - Fetch safe distinct sample values
+12. **db.preview** - Quick table preview
+13. **db.watch** - Poll for incremental changes
+14. **db.count** - Get exact row counts
 
 ### 📊 Resources
 
@@ -205,6 +215,8 @@ For contributing or customizing:
 | `DEFAULT_DATABASE`     | ✗          | default | Default alias used when tool input omits `database`       |
 | `STATEMENT_TIMEOUT_MS` | ✗          | 5000    | Query timeout in milliseconds                              |
 | `MAX_ROWS`             | ✗          | 500     | Default maximum rows returned                              |
+| `MAX_STATEMENTS`       | ✗          | 10      | Maximum semicolon-separated statements per multi-statement tool call |
+| `AUDIT_LOG`            | ✗          | false   | Set to `true` to write JSON audit events to stderr         |
 
 At least one of `DATABASE_URL` or `DATABASE_URLS` must be configured.
 
@@ -248,7 +260,7 @@ postgresql://username:password@host:5432/database_name
 
 ## Tools Documentation
 
-All DB tools (`db.schema`, `db.query`, `db.preview`, `db.watch`, `db.count`) support an optional `database` parameter to select a configured alias.
+All DB tools support an optional `database` parameter to select a configured alias.
 
 ### 0. db.databases
 
@@ -340,11 +352,11 @@ Inspect database schema information.
 
 ### 2. db.query
 
-Execute a read-only SELECT query with optional parameters.
+Execute one or more read-only SELECT queries. Single-statement calls keep the original response shape; multi-statement calls return one result object per statement.
 
 **Parameters:**
 
-- `sql` (required): SELECT query (with or without LIMIT)
+- `sql` (required): One SELECT query or multiple semicolon-separated SELECT queries
 - `params` (optional): Array of parameter values for $1, $2, etc.
 - `maxRows` (optional): Maximum rows to return (1-5000, default: 500)
 - `database` (optional): Database alias from `DATABASE_URLS` (or `default`)
@@ -368,9 +380,14 @@ Execute a read-only SELECT query with optional parameters.
 {
   "sql": "SELECT * FROM orders ORDER BY created_at DESC LIMIT 10"
 }
+
+// Multiple non-parameterized SELECT queries in one call
+{
+  "sql": "SELECT COUNT(*) AS users_count FROM users; SELECT COUNT(*) AS orders_count FROM orders;"
+}
 ```
 
-**Response:**
+**Response (single statement):**
 
 ```json
 {
@@ -380,15 +397,176 @@ Execute a read-only SELECT query with optional parameters.
 }
 ```
 
+**Response (multiple statements):**
+
+```json
+{
+  "statementCount": 2,
+  "results": [
+    {
+      "statement": 1,
+      "rowCount": 1,
+      "fields": ["users_count"],
+      "rows": [{ "users_count": "1250" }]
+    },
+    {
+      "statement": 2,
+      "rowCount": 1,
+      "fields": ["orders_count"],
+      "rows": [{ "orders_count": "8421" }]
+    }
+  ]
+}
+```
+
 **Security Notes:**
 
 - Only SELECT and WITH (CTE) queries allowed
-- Single statement only
-- A single trailing semicolon is accepted, but multiple statements are blocked
-- Automatic LIMIT enforcement if not specified
+- Multi-statement calls are allowed only when every statement is read-only
+- Parameterized queries must be single-statement
+- Automatic LIMIT enforcement applies to every statement if not specified
 - Query timeout: 5 seconds (default)
 
-### 3. db.preview
+### 3. db.validate_insert
+
+Validate INSERT SQL without performing the INSERT. This tool uses `EXPLAIN (FORMAT JSON)` without `ANALYZE`, so PostgreSQL parses and plans the INSERT but does not insert rows.
+
+**Parameters:**
+
+- `sql` (required): One INSERT statement or multiple semicolon-separated INSERT statements
+- `params` (optional): Array of parameter values for $1, $2, etc.
+- `database` (optional): Database alias from `DATABASE_URLS` (or `default`)
+
+**Examples:**
+
+```javascript
+// Validate a single INSERT
+{
+  "sql": "INSERT INTO users (name, email) VALUES ($1, $2)",
+  "params": ["Alice", "alice@example.com"]
+}
+
+// Validate multiple non-parameterized INSERT statements
+{
+  "sql": "INSERT INTO users (name, email) VALUES ('Alice', 'alice@example.com'); INSERT INTO audit_logs (action) VALUES ('test');"
+}
+```
+
+**Response:**
+
+```json
+{
+  "valid": true,
+  "executed": false,
+  "validatedBy": "EXPLAIN (FORMAT JSON)",
+  "statementCount": 1,
+  "results": [
+    {
+      "statement": 1,
+      "valid": true,
+      "sql": "INSERT INTO users (name, email) VALUES ($1, $2)",
+      "planNode": "ModifyTable"
+    }
+  ]
+}
+```
+
+**Validation Notes:**
+
+- This checks syntax, table names, column names, type compatibility, and permissions needed to plan the INSERT
+- This does not perform any INSERT operation and does not persist rows
+- This cannot detect runtime-only errors such as unique conflicts, foreign-key violations, trigger errors, not-null/check failures that depend on runtime values, or defaults that fail during execution
+- Parameterized validation must be single-statement
+- The tool only accepts statements starting with INSERT
+
+### 4. db.validate_sql
+
+Validate SQL statement shape without executing it. This uses `EXPLAIN (FORMAT JSON)` without `ANALYZE`.
+
+**Parameters:**
+
+- `mode` (required): `"select"`, `"insert"`, `"update"`, or `"delete"`
+- `sql` (required): SQL statement matching the selected mode
+- `params` (optional): Array of parameter values for $1, $2, etc.
+- `database` (optional): Database alias from `DATABASE_URLS` (or `default`)
+
+**Example:**
+
+```javascript
+{
+  "mode": "update",
+  "sql": "UPDATE users SET last_seen_at = now() WHERE id = $1",
+  "params": [123]
+}
+```
+
+### 5. db.explain
+
+Return PostgreSQL query plans for SELECT/WITH statements without executing them.
+
+**Parameters:**
+
+- `sql` (required): One SELECT/WITH statement or multiple semicolon-separated SELECT/WITH statements
+- `params` (optional): Array of parameter values for $1, $2, etc.
+- `database` (optional): Database alias from `DATABASE_URLS` (or `default`)
+
+**Example:**
+
+```javascript
+{
+  "sql": "SELECT * FROM orders WHERE user_id = $1 ORDER BY created_at DESC LIMIT 20",
+  "params": [123]
+}
+```
+
+### 6. db.table_info
+
+Inspect one table's columns, indexes, constraints, foreign-key relationships, and triggers.
+
+**Parameters:**
+
+- `table` (required): Table name (use `schema.table` or just `table`)
+- `database` (optional): Database alias from `DATABASE_URLS` (or `default`)
+
+### 7. db.indexes
+
+List indexes for all user tables or a single table.
+
+**Parameters:**
+
+- `table` (optional): Table name (use `schema.table` or just `table`)
+- `database` (optional): Database alias from `DATABASE_URLS` (or `default`)
+
+### 8. db.constraints
+
+List primary-key, foreign-key, unique, check, and exclusion constraints.
+
+**Parameters:**
+
+- `table` (optional): Table name (use `schema.table` or just `table`)
+- `database` (optional): Database alias from `DATABASE_URLS` (or `default`)
+
+### 9. db.relationships
+
+List foreign-key relationships for all user tables or a single table.
+
+**Parameters:**
+
+- `table` (optional): Table name (use `schema.table` or just `table`)
+- `database` (optional): Database alias from `DATABASE_URLS` (or `default`)
+
+### 10. db.sample_values
+
+Return small distinct non-null sample values for selected columns.
+
+**Parameters:**
+
+- `table` (required): Table name (use `schema.table` or just `table`)
+- `columns` (required): Array of 1-20 column names
+- `limit` (optional): Number of values per column (1-100, default: 10)
+- `database` (optional): Database alias from `DATABASE_URLS` (or `default`)
+
+### 11. db.preview
 
 Quick preview of table rows.
 
@@ -423,7 +601,7 @@ Quick preview of table rows.
 }
 ```
 
-### 4. db.watch
+### 12. db.watch
 
 Poll for incremental changes using cursor-based pagination.
 
@@ -479,7 +657,7 @@ Poll for incremental changes using cursor-based pagination.
 - Audit log tracking
 - Event streaming
 
-### 5. db.count
+### 13. db.count
 
 Get exact row count for a table.
 
@@ -616,17 +794,21 @@ SELECT * FROM orders ORDER BY created_at DESC LIMIT 10
 
 The server performs multiple security checks:
 
-1. **Keyword Blocklist** - Prevents: INSERT, UPDATE, DELETE, DROP, ALTER, CREATE, TRUNCATE, GRANT, REVOKE, VACUUM, ANALYZE, REINDEX, COPY, CALL, DO, EXECUTE
+1. **Keyword Blocklist for db.query** - Prevents write and unsafe commands in read-query execution: INSERT, UPDATE, DELETE, DROP, ALTER, CREATE, TRUNCATE, GRANT, REVOKE, VACUUM, ANALYZE, REINDEX, COPY, CALL, DO, EXECUTE
 
 2. **Comment Stripping** - Removes SQL comments to prevent obfuscation
 
-3. **Single Statement** - Only one query per request. A trailing semicolon is allowed, but multi-statement SQL is blocked
+3. **Read-only Statements** - Single or multi-statement query requests are allowed when every statement is SELECT/WITH only
 
-4. **SELECT-only** - Must start with SELECT or WITH
+4. **Non-executing INSERT Validation** - `db.validate_insert` uses `EXPLAIN` without `ANALYZE` to validate INSERT shape without performing insert operations
 
-5. **Identifier Validation** - Table/column names must match `[a-zA-Z_][a-zA-Z0-9_]*`
+5. **SELECT-only for Queries** - `db.query` statements must start with SELECT or WITH
 
-6. **Parameterization** - Supports bind parameters ($1, $2, etc.) to prevent injection
+6. **Identifier Validation** - Table/column names must match `[a-zA-Z_][a-zA-Z0-9_]*`
+
+7. **Statement Limits** - Multi-statement tools are capped by `MAX_STATEMENTS`
+
+8. **Parameterization** - Supports bind parameters ($1, $2, etc.) to prevent injection
 
 ### Error Sanitization
 
