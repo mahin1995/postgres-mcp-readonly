@@ -211,7 +211,7 @@ For contributing or customizing:
 | Variable               | Required   | Default | Description                                                |
 | ---------------------- | ---------- | ------- | ---------------------------------------------------------- |
 | `DATABASE_URL`         | Conditional | -       | Single PostgreSQL connection string (backward compatible) |
-| `DATABASE_URLS`        | Conditional | -       | JSON object of aliases to PostgreSQL URLs                 |
+| `DATABASE_URLS`        | Conditional | -       | Multiple PostgreSQL URLs as `alias=url` pairs or JSON     |
 | `DEFAULT_DATABASE`     | ✗          | default | Default alias used when tool input omits `database`       |
 | `STATEMENT_TIMEOUT_MS` | ✗          | 5000    | Query timeout in milliseconds                              |
 | `MAX_ROWS`             | ✗          | 500     | Default maximum rows returned                              |
@@ -225,10 +225,18 @@ At least one of `DATABASE_URL` or `DATABASE_URLS` must be configured.
 This package now supports multiple database connections without breaking existing single-database usage.
 
 - Existing setup continues to work with only `DATABASE_URL`.
-- To use multiple databases, set `DATABASE_URLS` as JSON.
+- To use multiple databases, set `DATABASE_URLS` as comma-separated `alias=url` pairs.
+- JSON is still supported for backward compatibility.
 - Each DB tool accepts an optional `database` alias. If omitted, `DEFAULT_DATABASE` is used.
 
 Example environment:
+
+```env
+DATABASE_URLS=default=postgres://user:pass@localhost:5432/app,analytics=postgres://user:pass@localhost:5432/analytics
+DEFAULT_DATABASE=default
+```
+
+JSON format also works if your environment supports it:
 
 ```env
 DATABASE_URLS={"default":"postgres://user:pass@localhost:5432/app","analytics":"postgres://user:pass@localhost:5432/analytics"}

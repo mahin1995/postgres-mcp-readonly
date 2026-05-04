@@ -192,6 +192,66 @@ function assertDatabaseAlias(name: string): void {
   }
 }
 
+function addDatabaseUrl(
+  urls: Record<string, string>,
+  alias: string,
+  value: unknown,
+  sourceName: string,
+): void {
+  assertDatabaseAlias(alias);
+  if (typeof value !== "string" || !value.trim()) {
+    throw new Error(`${sourceName} entry '${alias}' must be a non-empty string.`);
+  }
+  urls[alias] = validateDatabaseUrl(value.trim(), `${sourceName}.${alias}`);
+}
+
+function parseDatabaseUrls(value: string): Record<string, string> {
+  const urls: Record<string, string> = {};
+  const raw = value.trim();
+
+  if (raw.startsWith("{")) {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      throw new Error(
+        'Invalid DATABASE_URLS JSON. Expected {"main":"postgres://...","analytics":"postgres://..."} or main=postgres://...,analytics=postgres://...',
+      );
+    }
+
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      throw new Error(
+        "Invalid DATABASE_URLS JSON. Expected an object with alias -> connection string mappings.",
+      );
+    }
+
+    for (const [alias, url] of Object.entries(parsed as Record<string, unknown>)) {
+      addDatabaseUrl(urls, alias, url, "DATABASE_URLS");
+    }
+    return urls;
+  }
+
+  for (const entry of raw.split(/[,\n]+/)) {
+    const trimmed = entry.trim();
+    if (!trimmed) {
+      continue;
+    }
+
+    const separatorIndex = trimmed.indexOf("=");
+    if (separatorIndex <= 0) {
+      throw new Error(
+        "Invalid DATABASE_URLS format. Expected alias=postgres://...,analytics=postgres://... or JSON object.",
+      );
+    }
+
+    const alias = trimmed.slice(0, separatorIndex).trim();
+    const url = trimmed.slice(separatorIndex + 1).trim();
+    addDatabaseUrl(urls, alias, url, "DATABASE_URLS");
+  }
+
+  return urls;
+}
+
 function getDatabaseConfig(): DatabaseConfig {
   const urls: Record<string, string> = {};
 
@@ -202,28 +262,7 @@ function getDatabaseConfig(): DatabaseConfig {
 
   const multiRaw = (process.env.DATABASE_URLS || "").trim();
   if (multiRaw) {
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(multiRaw);
-    } catch {
-      throw new Error(
-        "Invalid DATABASE_URLS format. Expected JSON object like {\"main\":\"postgres://...\",\"analytics\":\"postgres://...\"}",
-      );
-    }
-
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-      throw new Error(
-        "Invalid DATABASE_URLS format. Expected JSON object with alias -> connection string mappings.",
-      );
-    }
-
-    for (const [alias, value] of Object.entries(parsed as Record<string, unknown>)) {
-      assertDatabaseAlias(alias);
-      if (typeof value !== "string" || !value.trim()) {
-        throw new Error(`DATABASE_URLS entry '${alias}' must be a non-empty string.`);
-      }
-      urls[alias] = validateDatabaseUrl(value.trim(), `DATABASE_URLS.${alias}`);
-    }
+    Object.assign(urls, parseDatabaseUrls(multiRaw));
   }
 
   if (Object.keys(urls).length === 0) {
@@ -1039,6 +1078,42 @@ async function dbConstraints({
   }, database);
 }
 
+async function queryRelationships(
+  client: PoolClient,
+  parsed: ParsedTableName | null,
+): Promise<any[]> {
+  const result = await client.query(
+    `
+    SELECT
+      ns.nspname AS source_schema,
+      rel.relname AS source_table,
+      con.conname AS constraint_name,
+      array_agg(att.attname ORDER BY cols.ordinality) AS source_columns,
+      ref_ns.nspname AS target_schema,
+      ref_rel.relname AS target_table,
+      array_agg(ref_att.attname ORDER BY cols.ordinality) AS target_columns,
+      pg_get_constraintdef(con.oid, true) AS definition
+    FROM pg_constraint con
+    JOIN pg_class rel ON rel.oid = con.conrelid
+    JOIN pg_namespace ns ON ns.oid = rel.relnamespace
+    JOIN pg_class ref_rel ON ref_rel.oid = con.confrelid
+    JOIN pg_namespace ref_ns ON ref_ns.oid = ref_rel.relnamespace
+    JOIN unnest(con.conkey, con.confkey) WITH ORDINALITY AS cols(attnum, ref_attnum, ordinality)
+      ON true
+    JOIN pg_attribute att ON att.attrelid = rel.oid AND att.attnum = cols.attnum
+    JOIN pg_attribute ref_att ON ref_att.attrelid = ref_rel.oid AND ref_att.attnum = cols.ref_attnum
+    WHERE con.contype = 'f'
+      AND ns.nspname NOT IN ('pg_catalog','information_schema')
+      AND ($1::text IS NULL OR ns.nspname = $1 OR ref_ns.nspname = $1)
+      AND ($2::text IS NULL OR rel.relname = $2 OR ref_rel.relname = $2)
+    GROUP BY ns.nspname, rel.relname, con.conname, ref_ns.nspname, ref_rel.relname, con.oid
+    ORDER BY ns.nspname, rel.relname, con.conname
+    `,
+    [parsed?.schema ?? null, parsed?.table ?? null],
+  );
+  return result.rows;
+}
+
 async function dbRelationships({
   table,
   database,
@@ -1051,40 +1126,12 @@ async function dbRelationships({
   const startedAt = Date.now();
 
   return withClient(async (client) => {
-    const result = await client.query(
-      `
-      SELECT
-        ns.nspname AS source_schema,
-        rel.relname AS source_table,
-        con.conname AS constraint_name,
-        array_agg(att.attname ORDER BY cols.ordinality) AS source_columns,
-        ref_ns.nspname AS target_schema,
-        ref_rel.relname AS target_table,
-        array_agg(ref_att.attname ORDER BY cols.ordinality) AS target_columns,
-        pg_get_constraintdef(con.oid, true) AS definition
-      FROM pg_constraint con
-      JOIN pg_class rel ON rel.oid = con.conrelid
-      JOIN pg_namespace ns ON ns.oid = rel.relnamespace
-      JOIN pg_class ref_rel ON ref_rel.oid = con.confrelid
-      JOIN pg_namespace ref_ns ON ref_ns.oid = ref_rel.relnamespace
-      JOIN unnest(con.conkey, con.confkey) WITH ORDINALITY AS cols(attnum, ref_attnum, ordinality)
-        ON true
-      JOIN pg_attribute att ON att.attrelid = rel.oid AND att.attnum = cols.attnum
-      JOIN pg_attribute ref_att ON ref_att.attrelid = ref_rel.oid AND ref_att.attnum = cols.ref_attnum
-      WHERE con.contype = 'f'
-        AND ns.nspname NOT IN ('pg_catalog','information_schema')
-        AND ($1::text IS NULL OR ns.nspname = $1 OR ref_ns.nspname = $1)
-        AND ($2::text IS NULL OR rel.relname = $2 OR ref_rel.relname = $2)
-      GROUP BY ns.nspname, rel.relname, con.conname, ref_ns.nspname, ref_rel.relname, con.oid
-      ORDER BY ns.nspname, rel.relname, con.conname
-      `,
-      [parsed?.schema ?? null, parsed?.table ?? null],
-    );
+    const relationships = await queryRelationships(client, parsed);
     auditLog("db.relationships", database, startedAt, {
       table: table ?? null,
-      rowCount: result.rowCount || 0,
+      rowCount: relationships.length,
     });
-    return { relationships: result.rows };
+    return { relationships };
   }, database);
 }
 
@@ -1155,7 +1202,7 @@ async function dbTableInfo({
       [parsed.schema, parsed.table],
     );
 
-    const relationships = await dbRelationships({ table: `${parsed.schema}.${parsed.table}`, database });
+    const relationships = await queryRelationships(client, parsed);
 
     const triggers = await client.query(
       `
@@ -1190,7 +1237,7 @@ async function dbTableInfo({
       columns: columns.rows,
       indexes: indexes.rows,
       constraints: constraints.rows,
-      relationships: relationships.relationships,
+      relationships,
       triggers: triggers.rows,
     };
   }, database);
