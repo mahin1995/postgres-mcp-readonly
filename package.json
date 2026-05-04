@@ -1,6 +1,6 @@
 {
   "name": "postgres-mcp-readonly",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "A secure, read-only PostgreSQL Model Context Protocol (MCP) server for safe database introspection and querying",
   "main": "dist/server.js",
   "types": "dist/server.d.ts",
